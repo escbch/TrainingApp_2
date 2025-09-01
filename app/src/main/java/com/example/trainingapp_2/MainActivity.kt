@@ -38,6 +38,9 @@ import com.example.trainingapp_2.core.ExerciseSet
 import com.example.trainingapp_2.core.MainViewModel
 import com.example.trainingapp_2.core.Plan
 import com.example.trainingapp_2.core.TrainingDay
+import com.example.trainingapp_2.core.WeightMode
+import com.example.trainingapp_2.core.e1rm
+import com.example.trainingapp_2.core.suggestedWeightFromE1RM
 import java.time.*
 import java.time.format.DateTimeFormatter
 
@@ -77,6 +80,8 @@ sealed class Route(val path: String) {
     data object Summary : Route("summary/{epochDay}") {
         fun build(date: LocalDate) = "summary/${date.toEpochDay()}"
     }
+
+    data object Options : Route("options")
 }
 
 @Composable
@@ -207,13 +212,31 @@ fun AppRoot(vm: MainViewModel = viewModel()) {
             arguments = listOf(navArgument("epochDay") { type = NavType.LongType })
         ) { backStackEntry ->
             val epoch = backStackEntry.arguments?.getLong("epochDay")!!
-            val date = java.time.LocalDate.ofEpochDay(epoch)
+            val date = LocalDate.ofEpochDay(epoch)
             val sum = vm.summaryFor(date)
             if (sum == null) {
                 ErrorScreen("No summary for $date")
             } else {
-                SummaryScreen(date = date, summary = sum)
+                SummaryScreen(
+                    date = date,
+                    summary = sum,
+                    onDone = {
+                        val popped = nav.popBackStack(Route.Active.path, inclusive = false)
+                        if (!popped)  {
+                            nav.navigate(Route.Entry.path) {
+                                popUpTo(nav.graph.startDestinationId) { inclusive = true }
+                                launchSingleTop = true
+                            }
+                        }
+                    })
             }
+        }
+
+        composable(Route.Options.path) {
+            OptionsScreen(
+                current = vm.options.restSeconds,
+                onSave = { vm.setRestSeconds(it); nav.popBackStack()}
+            )
         }
     }
 }
@@ -501,13 +524,26 @@ fun ExerciseDetailScreen(
     exercise: Exercise,
     onUpdate: (setIndex: Int, newWeight: Double?, achievedRpe: Double?, completed: Boolean?) -> Unit
 ) {
+    val anchorE1rm: Double? = remember(exercise) {
+        if (exercise.weightMode == WeightMode.ANCHOR_E1RM_FROM_SET1) {
+            val s1 = exercise.sets.firstOrNull()
+            s1?.weight?.let {
+                w -> e1rm(w, s1.reps, s1.achievedRPE)?.toDouble()
+            }
+        } else null
+    }
     Scaffold(topBar = { TopAppBar(title = { Text(exercise.name) }) }) { padding ->
         LazyColumn(Modifier
             .fillMaxSize()
             .padding(padding)) {
             items(exercise.sets) { s ->
+                val suggested = if (anchorE1rm != null && s.setIndex > 1)
+                    suggestedWeightFromE1RM(anchorE1rm, s.reps, s.targetRPE)
+                else null
+
                 ExerciseSetCard(
                     set = s,
+                    suggestedWeight = suggested,
                     onChangeWeight = { w -> onUpdate(s.setIndex, w, null, null) },
                     onChangeRpe = { r -> onUpdate(s.setIndex, null, r, null) },
                     onToggleComplete = { c -> onUpdate(s.setIndex, null, null, c) }
@@ -520,6 +556,7 @@ fun ExerciseDetailScreen(
 @Composable
 private fun ExerciseSetCard(
     set: ExerciseSet,
+    suggestedWeight: Double?,
     onChangeWeight: (Double?) -> Unit,
     onChangeRpe: (Double?) -> Unit,
     onToggleComplete: (Boolean) -> Unit
@@ -567,7 +604,16 @@ private fun ExerciseSetCard(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            val e1 = com.example.trainingapp_2.core.e1rm(set.weight, set.reps)
+            if (suggestedWeight != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Suggested: ${"%.1f".format(suggestedWeight)} kg", style = MaterialTheme.typography.bodyMedium)
+                    TextButton(onClick = {
+                        onChangeWeight(suggestedWeight)
+                    }) { Text("Apply") }
+                }
+            }
+
+            val e1 = e1rm(set.weight, set.reps, set.achievedRPE)
             Text("E1RM: ${e1?.let { "$it kg" } ?: "—"}")
 
             Row(
@@ -723,10 +769,25 @@ private fun DayCell(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SummaryScreen(
-    date: java.time.LocalDate,
-    summary: com.example.trainingapp_2.core.TrainingDaySummary
+    date: LocalDate,
+    summary: com.example.trainingapp_2.core.TrainingDaySummary,
+    onDone: () -> Unit
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Summary ${date}") }) }) { padding ->
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Summary $date") }) },
+        bottomBar = {
+            Surface(tonalElevation = 3.dp) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(onClick = onDone) { Text("Back to main") }
+                }
+            }
+        }) { padding ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -750,6 +811,28 @@ fun SummaryScreen(
                     Text("We’ll aggregate sets/volume per group once exercises are tagged.")
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun OptionsScreen(current: Int, onSave: (Int) -> Unit) {
+    var seconds by remember { mutableIntStateOf(current) }
+    Scaffold(topBar = { TopAppBar(title = { Text("Options") }) }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("Rest timer (seconds)", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = seconds.toString(),
+                onValueChange = { seconds = it.filter { c -> c.isDigit() }.toIntOrNull()?.coerceIn(10, 600) ?: seconds },
+                singleLine = true,
+                label = { Text("Seconds") },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(onClick = { onSave(seconds) }) { Text("Save") }
         }
     }
 }

@@ -10,6 +10,10 @@ class MainViewModel(
 ) : ViewModel() {
     val plans get() = repo.plans.value
     val activePlan get() = repo.activePlan.value
+    data class Options(var restSeconds: Int = 120)
+    private val _options = androidx.compose.runtime.mutableStateOf(Options())
+    val options get () = _options.value
+
 
     private val dayState = mutableStateMapOf<LocalDate, TrainingDay>()
 
@@ -83,6 +87,8 @@ class MainViewModel(
 
     fun summaryFor(date: LocalDate): TrainingDaySummary? =
         dayState[date]?.let { computeDaySummary(it) }
+
+    fun setRestSeconds(seconds: Int) { _options.value = _options.value.copy(restSeconds = seconds)}
 
     private fun rebuildSchedule() {
         dayState.clear()

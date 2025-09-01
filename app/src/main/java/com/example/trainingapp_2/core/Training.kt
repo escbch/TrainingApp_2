@@ -8,6 +8,8 @@ import java.time.LocalDate
 import java.util.UUID
 import kotlin.math.roundToInt
 
+enum class WeightMode { MANUAL, ANCHOR_E1RM_FROM_SET1 }
+
 data class ExerciseSet(
     val setIndex: Int,
     val reps: Int,
@@ -21,6 +23,7 @@ data class Exercise(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
     val sets: List<ExerciseSet>,
+    val weightMode: WeightMode = WeightMode.MANUAL,
 )
 
 data class TrainingDay(
@@ -56,8 +59,8 @@ fun defaultDayTemplates(daysPerWeek: Int): List<List<Exercise>> {
         3 -> listOf(
             listOf(
                 Exercise(name = "Bench Press", sets = threeBy(5, targetRPE = 7.5)),
-                Exercise(name = "DB Bench Press", sets = threeBy(10, targetRPE = 8.0)),
-                Exercise(name = "Squat", sets = threeBy(5, targetRPE = 7.5)),
+                Exercise(name = "DB Bench Press", sets = threeBy(10, targetRPE = 8.0), weightMode = WeightMode.ANCHOR_E1RM_FROM_SET1),
+                Exercise(name = "Squat", sets = threeBy(5, targetRPE = 7.5), weightMode = WeightMode.ANCHOR_E1RM_FROM_SET1),
             ),
             listOf(
                 Exercise(name = "OHP", sets = threeBy(8, targetRPE = 8.0)),
@@ -120,5 +123,15 @@ private fun threeBy(reps: Int, targetRPE: Double?) = List(3) { i ->
 }
 
 /** E1RM via Epley: 1RM ≈ w * (1 + reps/30). */
-fun e1rm(weight: Double?, reps: Int): Int? =
-    weight?.let { (it * (1.0 + reps / 30.0)).roundToInt() }
+fun e1rm(weight: Double?, reps: Int, achievedRPE: Double?): Int? {
+    if (weight == null) return null
+    val rir = (10.0 - (achievedRPE ?: 10.0)).coerceAtLeast(0.0) // if unknown RPE → assume RIR=0 (RPE10)
+    val oneRm = weight * (1.0 + (reps + rir) / 30.0)  // Epley with RIR adjustment
+    return kotlin.math.round(oneRm).toInt()
+}
+
+fun suggestedWeightFromE1RM(anchorE1RM: Double, reps: Int, targetRPE: Double?): Double {
+    val rir = 10.0 - (targetRPE ?: 10.0)
+    val denom = 1.0 + (reps + rir) / 30.0
+    return (anchorE1RM / denom)
+}
