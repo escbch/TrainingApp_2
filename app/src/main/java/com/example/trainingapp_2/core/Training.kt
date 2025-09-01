@@ -28,6 +28,12 @@ data class TrainingDay(
     val exercises: List<Exercise>,
 )
 
+data class TrainingDaySummary(
+    val totalSets: Int,
+    val totalReps: Int,
+    val totalWeightMovedKg: Double,
+)
+
 /** Simple schedule generator:
  *  Creates all training dates for the active plan (weeks × trainingDays).
  *  Order is deterministic and cycles Mon..Sun picking only selected weekdays. */
@@ -89,6 +95,24 @@ fun defaultDayTemplates(daysPerWeek: Int): List<List<Exercise>> {
             )
         )
     }
+}
+
+fun computeDaySummary(day: TrainingDay): TrainingDaySummary {
+    var sets = 0
+    var reps = 0
+    var weight = 0.0
+    day.exercises.forEach { ex ->
+        ex.sets.forEach { s ->
+            sets += 1
+            reps += s.reps
+            weight += (s.weight ?: 0.0) * s.reps
+        }
+    }
+    return TrainingDaySummary(
+        totalSets = sets,
+        totalReps = reps,
+        totalWeightMovedKg = weight
+    )
 }
 
 private fun threeBy(reps: Int, targetRPE: Double?) = List(3) { i ->

@@ -65,7 +65,6 @@ sealed class Route(val path: String) {
     data object Setup : Route("setup/{planId}") {
         fun build(planId: String) = "setup/$planId"
     }
-    data object Schedule : Route("schedule")
     data object Day : Route("day/{epochDay}") {
         fun build(date: LocalDate) = "day/${date.toEpochDay()}"
     }
@@ -74,6 +73,10 @@ sealed class Route(val path: String) {
     }
 
     data object Calendar : Route("calendar")
+
+    data object Summary : Route("summary/{epochDay}") {
+        fun build(date: LocalDate) = "summary/${date.toEpochDay()}"
+    }
 }
 
 @Composable
@@ -144,13 +147,6 @@ fun AppRoot(vm: MainViewModel = viewModel()) {
             }
         }
 
-        composable(Route.Schedule.path) {
-            ScheduleScreen(
-                days = vm.getTrainingDays(),
-                onOpenDay = { date -> nav.navigate(Route.Day.build(date)) }
-            )
-        }
-
         composable(
             Route.Day.path,
             arguments = listOf(navArgument("epochDay") { type = NavType.LongType })
@@ -161,9 +157,15 @@ fun AppRoot(vm: MainViewModel = viewModel()) {
             if (day == null) {
                 ErrorScreen("Unknown day")
             } else {
+                val missing = vm.countMissingEntries(date)
                 TrainingDayScreen(
                     day = day,
-                    onOpenExercise = { exId -> nav.navigate(Route.ExerciseDetail.build(date, exId)) }
+                    missingCount = missing,
+                    onOpenExercise = { exId -> nav.navigate(Route.ExerciseDetail.build(date, exId)) },
+                    onFinish = { fillZeros ->
+                        if (fillZeros) vm.fillMissingWithZeros(date)
+                        nav.navigate(Route.Summary.build(date))
+                    }
                 )
             }
         }
@@ -198,6 +200,20 @@ fun AppRoot(vm: MainViewModel = viewModel()) {
                 trainingDates = vm.getTrainingDays().map { it.date }.toSet(),
                 onOpenDay = { date -> nav.navigate(Route.Day.build(date)) }
             )
+        }
+
+        composable(
+            Route.Summary.path,
+            arguments = listOf(navArgument("epochDay") { type = NavType.LongType })
+        ) { backStackEntry ->
+            val epoch = backStackEntry.arguments?.getLong("epochDay")!!
+            val date = java.time.LocalDate.ofEpochDay(epoch)
+            val sum = vm.summaryFor(date)
+            if (sum == null) {
+                ErrorScreen("No summary for $date")
+            } else {
+                SummaryScreen(date = date, summary = sum)
+            }
         }
     }
 }
@@ -411,49 +427,37 @@ fun ErrorScreen(msg: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScheduleScreen(
-    days: List<TrainingDay>,
-    onOpenDay: (LocalDate) -> Unit
+fun TrainingDayScreen(
+    day: TrainingDay,
+    missingCount: Int,
+    onOpenExercise: (String) -> Unit,
+    onFinish: (fillZeros: Boolean) -> Unit
 ) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Schedule") }) }) { padding ->
-        if (days.isEmpty()) {
-            Box(Modifier
-                .fillMaxSize()
-                .padding(padding), contentAlignment = Alignment.Center) {
-                Text("No training days generated.")
-            }
-        } else {
-            LazyColumn(Modifier
-                .fillMaxSize()
-                .padding(padding)) {
-                items(days) { d ->
-                    ElevatedCard(
-                        onClick = { onOpenDay(d.date) },
-                        modifier = Modifier
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                            .fillMaxWidth()
-                    ) {
-                        Column(Modifier.padding(16.dp)) {
-                            Text("${d.date}", style = MaterialTheme.typography.titleMedium)
-                            Text("${d.exercises.size} exercises")
+    var showConfirm by remember { mutableStateOf(false) }
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Training ${day.date}") }) },
+        bottomBar = {
+            Surface(tonalElevation = 3.dp) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    Button(onClick = {
+                        if (missingCount > 0) {
+                            showConfirm = true
+                        } else {
+                            onFinish(false) // no missing, go straight to summary
                         }
-                    }
+                    }) { Text("Finish day") }
                 }
             }
         }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun TrainingDayScreen(
-    day: TrainingDay,
-    onOpenExercise: (String) -> Unit
-) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Training ${day.date}") }) }) { padding ->
-        LazyColumn(Modifier
-            .fillMaxSize()
-            .padding(padding)) {
+    ) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding)) {
             items(day.exercises) { ex ->
                 ElevatedCard(
                     onClick = { onOpenExercise(ex.id) },
@@ -468,7 +472,25 @@ fun TrainingDayScreen(
                     }
                 }
             }
+            item { Spacer(Modifier.height(80.dp)) } // keep list above bottom bar
         }
+    }
+
+    if (showConfirm) {
+        AlertDialog(
+            onDismissRequest = { showConfirm = false },
+            title = { Text("Missing entries") },
+            text = { Text("There are $missingCount sets with no entries. Fill missing values with 0 to continue?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConfirm = false
+                    onFinish(true) // fill zeros then go to summary
+                }) { Text("Fill with 0 & continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirm = false }) { Text("Stay here") }
+            }
+        )
     }
 }
 
@@ -697,6 +719,41 @@ private fun DayCell(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SummaryScreen(
+    date: java.time.LocalDate,
+    summary: com.example.trainingapp_2.core.TrainingDaySummary
+) {
+    Scaffold(topBar = { TopAppBar(title = { Text("Summary ${date}") }) }) { padding ->
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Totals", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Sets: ${summary.totalSets}")
+                    Text("Reps: ${summary.totalReps}")
+                    Text("Weight moved: ${"%.1f".format(summary.totalWeightMovedKg)} kg")
+                }
+            }
+
+            // Placeholder for future per-muscle summary
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("By muscle group (coming soon)", fontWeight = FontWeight.SemiBold)
+                    Text("We’ll aggregate sets/volume per group once exercises are tagged.")
+                }
+            }
+        }
+    }
+}
+
 
 /** Build a month grid starting on [firstDayOfWeek], returning up to 6 weeks × 7 days.
  *  Nulls mark leading/trailing blanks in the grid. */

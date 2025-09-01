@@ -56,6 +56,34 @@ class MainViewModel(
         dayState[date] = td.copy(exercises = newExercises)
     }
 
+    fun countMissingEntries(date: LocalDate): Int {
+        val td = dayState[date] ?: return 0
+        var missing = 0
+        td.exercises.forEach { ex ->
+            ex.sets.forEach { s ->
+                // "nothing entered" → both weight & achievedRPE are null
+                if (s.weight == null && s.achievedRPE == null) missing += 1
+            }
+        }
+        return missing
+    }
+
+    fun fillMissingWithZeros(date: LocalDate) {
+        val td = dayState[date] ?: return
+        val newEx = td.exercises.map { ex ->
+            val newSets = ex.sets.map { s ->
+                if (s.weight == null && s.achievedRPE == null)
+                    s.copy(weight = 0.0, achievedRPE = 0.0)
+                else s
+            }
+            ex.copy(sets = newSets)
+        }
+        dayState[date] = td.copy(exercises = newEx)
+    }
+
+    fun summaryFor(date: LocalDate): TrainingDaySummary? =
+        dayState[date]?.let { computeDaySummary(it) }
+
     private fun rebuildSchedule() {
         dayState.clear()
         val ap = activePlan ?: return
